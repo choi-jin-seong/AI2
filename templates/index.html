@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RRU Quality Analyzer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #dbe2ea;
+      --accent: #2563eb;
+      --danger: #dc2626;
+      --warn: #d97706;
+      --ok: #059669;
+      --na: #6b7280;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .container {
+      max-width: 1820px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+    }
+
+    .panel {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+      margin-bottom: 20px;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .toolbar input[type="file"] {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .toolbar button {
+      border: none;
+      border-radius: 8px;
+      padding: 11px 18px;
+      cursor: pointer;
+      font-weight: bold;
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .toolbar button.secondary {
+      background: #4b5563;
+    }
+
+    .status {
+      margin-top: 14px;
+      color: var(--muted);
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+    }
+
+    .summary-card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+    }
+
+    .summary-card .label {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+
+    .summary-card .value {
+      font-size: 24px;
+      font-weight: bold;
+    }
+
+    .section-hidden {
+      display: none;
+    }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .config-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .config-item label {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .config-item input,
+    .config-item select {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .subsection-title {
+      margin: 32px 0 14px;
+      padding: 12px 16px;
+      font-size: 20px;
+      font-weight: 700;
+      color: #1e3a8a;
+      background: linear-gradient(90deg, #eff6ff 0%, #f8fbff 100%);
+      border-left: 6px solid #2563eb;
+      border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+      letter-spacing: -0.2px;
+    }
+
+    .chart-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .chart-panel-compact {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+    }
+
+    .chart-wrap {
+      position: relative;
+    }
+
+    .chart-wrap.compact {
+      min-height: 260px;
+      height: 260px;
+    }
+
+    .chart-wrap.medium {
+      min-height: 320px;
+      height: 320px;
+    }
+
+    .chart-note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .ai-box {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px;
+      background: #fff;
+    }
+
+    .ai-badge {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+
+    .ai-badge.ok {
+      background: #ecfdf5;
+      color: #065f46;
+    }
+
+    .ai-badge.warn {
+      background: #fff7ed;
+      color: #9a3412;
+    }
+
+    .ai-badge.danger {
+      background: #fef2f2;
+      color: #991b1b;
+    }
+
+    .legend-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .status-chip {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .status-pass {
+      background: #e8f5e9;
+      color: #166534;
+      border: 1px solid #bbf7d0;
+    }
+
+    .status-warning {
+      background: #fff7e6;
+      color: #9a3412;
+      border: 1px solid #fde68a;
+    }
+
+    .status-fail {
+      background: #fef2f2;
+      color: #991b1b;
+      border: 1px solid #fecaca;
+    }
+
+    .status-na {
+      background: #f3f4f6;
+      color: #4b5563;
+      border: 1px solid #d1d5db;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px;
+      text-align: left;
+      font-size: 14px;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef3f9;
+      white-space: nowrap;
+    }
+
+    tr:nth-child(even) {
+      background: #fafcff;
+    }
+
+    .danger-list {
+      margin: 0;
+      padding-left: 20px;
+      color: var(--danger);
+    }
+
+    .heatmap-header {
+      margin-bottom: 12px;
+      font-size: 14px;
+      color: #374151;
+    }
+
+    .heatmap-chunk {
+      margin-bottom: 12px;
+    }
+
+    .heatmap-row {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 4px;
+      margin-bottom: 4px;
+    }
+
+    .heatmap-cell {
+      width: 34px;
+      height: 28px;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      line-height: 1;
+      border: 1px solid rgba(0, 0, 0, 0.04);
+      user-select: none;
+    }
+
+    .heatmap-cell.empty {
+      background: #e5e7eb;
+      color: #9ca3af;
+    }
+
+    .heatmap-legend {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+      font-size: 13px;
+      color: #4b5563;
+    }
+
+    .heatmap-legend-bar {
+      width: 120px;
+      height: 14px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #c8d7c5 0%, #e55361 100%);
+    }
+
+    ul.compact-list {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .markdown-like {
+      white-space: pre-wrap;
+      line-height: 1.7;
+      word-break: break-word;
+      font-size: 14px;
+    }
+
+    @media (max-width: 1024px) {
+      .chart-grid-2 {
+        grid-template-columns: 1fr;
+      }
+
+      .chart-wrap.compact,
+      .chart-wrap.medium {
+        min-height: 300px;
+        height: 300px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .container {
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>RRU Quality Analyzer</h1>
+
+    <div class="panel">
+      <h2>입력</h2>
+      <div class="toolbar">
+        <input type="file" id="zipFileInput" accept=".zip" />
+        <button id="analyzeBtn">분석 실행</button>
+        <button id="resetBtn" class="secondary">화면 초기화</button>
+      </div>
+
+      <div class="config-grid">
+        <div class="config-item">
+          <label for="sortMode">정렬 방식</label>
+          <select id="sortMode">
+            <option value="name">장비번호순</option>
+            <option value="dlAsc">DL Power 오름차순</option>
+            <option value="dlDesc">DL Power 내림차순</option>
+            <option value="vswr0Asc">VSWR P0 오름차순</option>
+            <option value="vswr0Desc">VSWR P0 내림차순</option>
+            <option value="rfu0Asc">RFU0 온도 오름차순</option>
+            <option value="rfu0Desc">RFU0 온도 내림차순</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="statusArea" class="status">대기 중</div>
+    </div>
+
+    <div id="resultSection" class="section-hidden">
+      <div class="panel">
+        <h2>전체 요약 통계</h2>
+        <div id="summaryGrid" class="summary-grid"></div>
+      </div>
+
+      <div class="panel">
+        <h2>판정 상태 범례</h2>
+        <div class="legend-row">
+          <span class="status-chip status-pass">PASS</span>
+          <span class="status-chip status-warning">WARNING</span>
+          <span class="status-chip status-fail">FAIL</span>
+          <span class="status-chip status-na">N/A</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>규칙 기반 종합 분석</h2>
+        <div id="aiSummaryArea" class="ai-box"></div>
+      </div>
+
+      <div class="panel">
+        <h2>로그별 규칙 기반 위험 분석</h2>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>장비번호</th>
+                <th>종합판정</th>
+                <th>위험등급</th>
+                <th>점수</th>
+                <th>DL</th>
+                <th>RL</th>
+                <th>UL</th>
+                <th>DTU</th>
+                <th>RFU</th>
+                <th>PSU IN</th>
+                <th>SFP TX</th>
+                <th>SFP RX</th>
+                <th>위험요소</th>
+                <th>추정 원인</th>
+                <th>점검 포인트</th>
+              </tr>
+            </thead>
+            <tbody id="perLogAiTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="subsection-title">1. DL Output Power 분석</div>
+      <div class="panel">
+        <div class="chart-grid-2">
+          <div class="chart-panel-compact">
+            <h2>DL Output Power (Port 0)</h2>
+            <div class="chart-wrap compact">
+              <canvas id="dlBarChartCanvas"></canvas>
+            </div>
+            <div class="chart-note">
+              y축은 값 차이를 잘 보이도록 자동 확대되며, 눈금 간격은 0.1입니다.
+            </div>
+          </div>
+
+          <div class="chart-panel-compact">
+            <h2>DL Output Power 분포도</h2>
+            <div class="chart-wrap compact">
+              <canvas id="dlHistChartCanvas"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection-title">2. UL Power 분석</div>
+      <div class="panel">
+        <div class="chart-grid-2">
+          <div class="chart-panel-compact">
+            <h2>UL Power (Port 0)</h2>
+            <div class="chart-wrap compact">
+              <canvas id="ulBarChartCanvas"></canvas>
+            </div>
+            <div class="chart-note">
+              y축은 값 차이를 잘 보이도록 자동 확대되며, 눈금 간격은 0.1입니다.
+            </div>
+          </div>
+
+          <div class="chart-panel-compact">
+            <h2>UL Power 분포도</h2>
+            <div class="chart-wrap compact">
+              <canvas id="ulHistChartCanvas"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection-title">3. VSWR 분석</div>
+      <div class="panel">
+        <div class="chart-grid-2">
+          <div class="chart-panel-compact">
+            <h2>VSWR 그래프 (Port 0, 1)</h2>
+            <div class="chart-wrap compact">
+              <canvas id="vswrChart01"></canvas>
+            </div>
+            <div class="chart-note">x축 라벨은 로그명 뒤 3자리만 표시합니다.</div>
+          </div>
+
+          <div class="chart-panel-compact">
+            <h2>VSWR 그래프 (Port 2, 3)</h2>
+            <div class="chart-wrap compact">
+              <canvas id="vswrChart23"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection-title">4. Return Loss 분석</div>
+      <div class="panel">
+        <div class="chart-grid-2">
+          <div class="chart-panel-compact">
+            <h2>Return Loss 그래프 (Port 0, 1)</h2>
+            <div class="chart-wrap compact">
+              <canvas id="rlChart01"></canvas>
+            </div>
+            <div class="chart-note">Return Loss(dB) = -20 log10((VSWR - 1) / (VSWR + 1))</div>
+          </div>
+
+          <div class="chart-panel-compact">
+            <h2>Return Loss 그래프 (Port 2, 3)</h2>
+            <div class="chart-wrap compact">
+              <canvas id="rlChart23"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection-title">5. Temperature 분석</div>
+      <div class="panel">
+        <div class="chart-grid-2">
+          <div class="chart-panel-compact">
+            <h2>Temperature 그래프</h2>
+            <div class="chart-wrap medium">
+              <canvas id="tempChartCanvas"></canvas>
+            </div>
+            <div class="chart-note">DTU, FPGA, RFU0, RFU1를 한 그래프에 표시합니다.</div>
+          </div>
+
+          <div class="chart-panel-compact">
+            <h2>Temperature Heatmap</h2>
+            <div id="tempHeatmapContainer"></div>
+            <div class="chart-note">RFU0(top) / RFU1(bottom) 형태로 표시합니다.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="chart-panel-compact">
+          <h2>온도 항목별 범위 (Min / Avg / Max)</h2>
+          <div class="chart-wrap medium">
+            <canvas id="tempRangeChartCanvas"></canvas>
+          </div>
+          <div class="chart-note">
+            mon -s 기준 DTU, FPGA, PMC, PSU(12V PWR), AISG, RFU0, RFU1의 장비 전체 Min / Avg / Max를 표시합니다.
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>장비별 상세 결과</h2>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>장비번호</th>
+                <th>종합판정</th>
+                <th>DL 판정</th>
+                <th>RL 판정</th>
+                <th>UL 판정</th>
+                <th>DTU 판정</th>
+                <th>RFU 판정</th>
+                <th>PSU IN 판정</th>
+                <th>SFP TX 판정</th>
+                <th>SFP RX 판정</th>
+                <th>DL Power (P0)</th>
+                <th>UL Power (P0)</th>
+                <th>RL Worst</th>
+                <th>DTU</th>
+                <th>FPGA</th>
+                <th>RFU0</th>
+                <th>RFU1</th>
+                <th>PSU IN</th>
+                <th>SFP TX</th>
+                <th>SFP RX</th>
+                <th>비고</th>
+              </tr>
+            </thead>
+            <tbody id="mergedResultTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>분석 실패 로그</h2>
+        <ul id="failedList" class="danger-list"></ul>
+      </div>
+
+      <div class="panel">
+        <h2>GEMINI 기반 솔루션</h2>
+        <div id="openAiSolutionArea" class="ai-box"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
