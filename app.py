@@ -882,6 +882,59 @@ def build_openai_payload(analysis: dict[str, Any], per_log_ai: list[dict[str, An
         "topRiskLogs": top_risks,
     }
 
+def normalize_ai_error(exc: Exception) -> dict[str, Any]:
+    msg = str(exc)
+
+    # Gemini 무료 quota / rate limit
+    if "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+        return {
+            "status": "ERROR",
+            "errorType": "QUOTA",
+            "title": "Gemini 사용 한도 초과",
+            "userMessage": (
+                "현재 Gemini 무료 사용 한도를 초과했습니다. "
+                "잠시 후 다시 시도하거나, 정렬 변경 시 AI 재호출을 줄이세요."
+            ),
+            "detail": msg,
+        }
+
+    # Gemini 일시 과부하
+    if "503" in msg or "UNAVAILABLE" in msg or "high demand" in msg.lower():
+        return {
+            "status": "ERROR",
+            "errorType": "TEMP_UNAVAILABLE",
+            "title": "Gemini 일시 과부하",
+            "userMessage": (
+                "현재 Gemini 서비스 응답이 불안정합니다. "
+                "잠시 후 다시 시도해 주세요."
+            ),
+            "detail": msg,
+        }
+
+    # 키 문제
+    if "API key not valid" in msg or "authentication" in msg.lower() or "api_key" in msg.lower():
+        return {
+            "status": "ERROR",
+            "errorType": "AUTH",
+            "title": "Gemini 인증 오류",
+            "userMessage": (
+                "Gemini API 키가 없거나 올바르지 않습니다. "
+                "서버 환경변수를 확인해야 합니다."
+            ),
+            "detail": msg,
+        }
+
+    return {
+        "status": "ERROR",
+        "errorType": "UNKNOWN",
+        "title": "AI 분석 오류",
+        "userMessage": (
+            "AI 분석 중 알 수 없는 오류가 발생했습니다. "
+            "잠시 후 다시 시도해 주세요."
+        ),
+        "detail": msg,
+    }
+
 def call_openai_solution(analysis: dict[str, Any], per_log_ai: list[dict[str, Any]]) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -976,6 +1029,7 @@ def call_openai_solution(analysis: dict[str, Any], per_log_ai: list[dict[str, An
             if retryable and attempt < len(delays):
                 time.sleep(delays[attempt])
                 continue
+
 
             if retryable:
                 return {
