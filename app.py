@@ -1058,6 +1058,19 @@ def analyze() -> Any:
     except Exception as exc:
         return jsonify({"ok": False, "message": f"오류 발생: {exc}"}), 500
 
+@app.errorhandler(404)
+def handle_404(exc):
+    return jsonify({"ok": False, "message": "요청한 경로를 찾을 수 없습니다."}), 404
+
+
+@app.errorhandler(413)
+def handle_413(exc):
+    return jsonify({"ok": False, "message": "업로드 파일 크기가 제한을 초과했습니다."}), 413
+
+
+@app.errorhandler(500)
+def handle_500(exc):
+    return jsonify({"ok": False, "message": "서버 내부 오류가 발생했습니다."}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
