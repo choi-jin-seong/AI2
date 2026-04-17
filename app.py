@@ -1017,45 +1017,54 @@ def call_openai_solution(analysis: dict[str, Any], per_log_ai: list[dict[str, An
             }
 
         except Exception as exc:
-            last_error = str(exc)
 
-            # 503 / UNAVAILABLE / high demand 인 경우만 재시도
-            retryable = (
-                "503" in last_error
-                or "UNAVAILABLE" in last_error
-                or "high demand" in last_error.lower()
-            )
+        last_error = str(exc)
 
-            if retryable and attempt < len(delays):
-                time.sleep(delays[attempt])
-                continue
-
-
-            if retryable:
-                return {
-                    "status": "ERROR",
-                    "model": model_name,
-                    "content": None,
-                    "error": (
-                        f"Gemini 호출 실패: {last_error}\n"
-                        "일시적 과부하 상태입니다. 잠시 후 다시 시도하거나 "
-                        "GEMINI_MODEL을 더 가벼운 Flash/Lite 계열로 바꾸세요."
-                    ),
-                }
-
+        # 429 / quota 초과
+        if (
+            "429" in last_error
+            or "RESOURCE_EXHAUSTED" in last_error
+            or "quota" in last_error.lower()
+        ):
             return {
                 "status": "ERROR",
                 "model": model_name,
                 "content": None,
-                "error": f"Gemini 호출 실패: {last_error}",
+                "error": (
+                    "Gemini 무료 사용 한도를 초과했습니다. "
+                    "잠시 후 다시 시도하거나, AI 재호출 횟수를 줄여주세요."
+                ),
             }
 
-    return {
-        "status": "ERROR",
-        "model": model_name,
-        "content": None,
-        "error": f"Gemini 호출 실패: {last_error}",
-    }
+        # 503 / UNAVAILABLE / high demand 인 경우만 재시도
+        retryable = (
+            "503" in last_error
+            or "UNAVAILABLE" in last_error
+            or "high demand" in last_error.lower()
+        )
+
+        if retryable and attempt < len(delays):
+            time.sleep(delays[attempt])
+            continue
+
+        if retryable:
+            return {
+                "status": "ERROR",
+                "model": model_name,
+                "content": None,
+                "error": (
+                    "Gemini 서비스가 일시적으로 과부하 상태입니다. "
+                    "잠시 후 다시 시도해 주세요."
+                ),
+            }
+
+        return {
+            "status": "ERROR",
+            "model": model_name,
+            "content": None,
+            "error": "Gemini 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+        }
+           
 
 
 @app.route("/")
