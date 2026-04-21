@@ -115,6 +115,142 @@
       display: none;
     }
 
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background:
+        radial-gradient(circle at top, rgba(37, 99, 235, 0.18), transparent 42%),
+        rgba(15, 23, 42, 0.62);
+      backdrop-filter: blur(8px);
+      z-index: 9999;
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 0.22s ease, visibility 0.22s ease;
+    }
+
+    .loading-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .loading-card {
+      position: relative;
+      min-width: 280px;
+      width: min(100%, 460px);
+      padding: 30px 28px 24px;
+      border-radius: 24px;
+      border: 1px solid rgba(255, 255, 255, 0.5);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(239, 246, 255, 0.98) 100%);
+      box-shadow:
+        0 24px 70px rgba(15, 23, 42, 0.30),
+        inset 0 1px 0 rgba(255, 255, 255, 0.65);
+      text-align: center;
+      overflow: hidden;
+    }
+
+    .loading-card::before {
+      content: "";
+      position: absolute;
+      inset: auto -40px 72%;
+      height: 130px;
+      background: radial-gradient(circle, rgba(96, 165, 250, 0.28) 0%, transparent 72%);
+      pointer-events: none;
+    }
+
+    .loading-spinner {
+      position: relative;
+      width: 72px;
+      height: 72px;
+      margin: 0 auto 20px;
+      border: 6px solid rgba(191, 219, 254, 0.65);
+      border-top-color: #2563eb;
+      border-right-color: #60a5fa;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+      box-shadow: 0 0 0 10px rgba(219, 234, 254, 0.52);
+    }
+
+    .loading-spinner::after {
+      content: "";
+      position: absolute;
+      inset: 14px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(59, 130, 246, 0.16) 0%, rgba(255, 255, 255, 0.92) 70%);
+    }
+
+    .loading-eyebrow {
+      margin: 0 0 10px;
+      color: #2563eb;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .loading-title {
+      margin: 0 0 10px;
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #0f172a;
+    }
+
+    .loading-message {
+      margin: 0 0 20px;
+      color: #475569;
+      line-height: 1.7;
+      font-size: 15px;
+      white-space: pre-wrap;
+    }
+
+    .loading-progress {
+      width: 100%;
+      height: 10px;
+      margin-bottom: 14px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(191, 219, 254, 0.6);
+      box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+
+    .loading-progress-fill {
+      width: 20%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2563eb 0%, #60a5fa 45%, #93c5fd 100%);
+      box-shadow: 0 0 14px rgba(37, 99, 235, 0.28);
+      transition: width 0.35s ease;
+    }
+
+    .loading-step {
+      margin: 0 0 6px;
+      color: #1e3a8a;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .loading-caption {
+      margin: 0;
+      color: #64748b;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    body.loading-active {
+      overflow: hidden;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
     .config-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -373,6 +509,20 @@
   </style>
 </head>
 <body>
+  <div id="loadingOverlay" class="loading-overlay hidden" aria-live="polite" aria-busy="true">
+    <div class="loading-card">
+      <div class="loading-spinner" aria-hidden="true"></div>
+      <p id="loadingEyebrow" class="loading-eyebrow">RRU QUALITY ANALYZER</p>
+      <p id="loadingTitle" class="loading-title">로그 분석 중</p>
+      <p id="loadingMessage" class="loading-message">잠시만 기다려 주세요.</p>
+      <div class="loading-progress" aria-hidden="true">
+        <div id="loadingProgressFill" class="loading-progress-fill"></div>
+      </div>
+      <p id="loadingStep" class="loading-step">1/3 단계 준비 중</p>
+      <p class="loading-caption">분석이 끝나면 이 화면은 자동으로 닫히고 결과 표와 차트가 바로 표시됩니다.</p>
+    </div>
+  </div>
+
   <div class="container">
     <h1>RRU Quality Analyzer</h1>
 
@@ -399,7 +549,7 @@
         </div>
       </div>
 
-      <div id="statusArea" class="status">대기 중</div>
+      <div id="statusArea" class="status">분석할 ZIP 파일을 선택해 주세요.</div>
     </div>
 
     <div id="resultSection" class="section-hidden">

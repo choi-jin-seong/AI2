@@ -2,9 +2,131 @@ let chartInstances = [];
 let currentAnalysis = null;
 let currentPerLogAi = [];
 let lastUploadedFile = null;
+let isLoading = false;
+let loadingStepTimer = null;
+
+const ANALYSIS_LOADING_STEPS = [
+  {
+    title: "로그 분석을 준비하고 있습니다",
+    message: "업로드한 ZIP 파일을 확인하고\n분석에 필요한 항목을 읽는 중입니다.",
+    step: "1/3 ZIP 파일 구조 확인"
+  },
+  {
+    title: "로그 패턴을 정리하고 있습니다",
+    message: "장비별 지표를 추출하고 비교할 수 있게\n데이터를 정리하고 있습니다.",
+    step: "2/3 장비 로그 해석"
+  },
+  {
+    title: "결과 화면을 만드는 중입니다",
+    message: "요약 정보와 차트, 판정 결과를\n화면에 보여줄 준비를 하고 있습니다.",
+    step: "3/3 결과 시각화 준비"
+  }
+];
+
+const RERENDER_LOADING_STEPS = [
+  {
+    title: "정렬 기준을 반영하고 있습니다",
+    message: "선택한 조건에 맞춰 결과 순서를 다시 맞추는 중입니다.",
+    step: "1/2 결과 재정렬"
+  },
+  {
+    title: "화면을 새로 그리는 중입니다",
+    message: "차트와 표를 다시 배치해서 최신 결과를 보여주고 있습니다.",
+    step: "2/2 화면 갱신"
+  }
+];
 
 function setStatus(message) {
   document.getElementById("statusArea").textContent = message;
+}
+
+function clearLoadingStepTimer() {
+  if (loadingStepTimer) {
+    clearInterval(loadingStepTimer);
+    loadingStepTimer = null;
+  }
+}
+
+function updateLoadingView(stepConfig, stepIndex, totalSteps) {
+  const loadingEyebrow = document.getElementById("loadingEyebrow");
+  const loadingTitle = document.getElementById("loadingTitle");
+  const loadingMessage = document.getElementById("loadingMessage");
+  const loadingStep = document.getElementById("loadingStep");
+  const loadingProgressFill = document.getElementById("loadingProgressFill");
+
+  if (loadingEyebrow) {
+    loadingEyebrow.textContent = totalSteps > 1 ? `ANALYSIS STEP ${stepIndex + 1}` : "RRU QUALITY ANALYZER";
+  }
+
+  if (loadingTitle) {
+    loadingTitle.textContent = stepConfig?.title || "로그 분석 중";
+  }
+
+  if (loadingMessage) {
+    loadingMessage.textContent = stepConfig?.message || "잠시만 기다려 주세요.";
+  }
+
+  if (loadingStep) {
+    loadingStep.textContent = stepConfig?.step || "분석 진행 중";
+  }
+
+  if (loadingProgressFill) {
+    const ratio = totalSteps > 0 ? ((stepIndex + 1) / totalSteps) * 100 : 20;
+    loadingProgressFill.style.width = `${Math.max(18, ratio)}%`;
+  }
+}
+
+function setLoading(loading, options = {}) {
+  isLoading = loading;
+  clearLoadingStepTimer();
+
+  const overlay = document.getElementById("loadingOverlay");
+  const analyzeBtn = document.getElementById("analyzeBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const sortMode = document.getElementById("sortMode");
+  const zipFileInput = document.getElementById("zipFileInput");
+
+  if (overlay) {
+    overlay.classList.toggle("hidden", !loading);
+  }
+
+  document.body.classList.toggle("loading-active", loading);
+
+  if (analyzeBtn) analyzeBtn.disabled = loading;
+  if (resetBtn) resetBtn.disabled = loading;
+  if (sortMode) sortMode.disabled = loading;
+  if (zipFileInput) zipFileInput.disabled = loading;
+
+  if (!loading) {
+    updateLoadingView(
+      {
+        title: "로그 분석 중",
+        message: "잠시만 기다려 주세요.",
+        step: "분석 대기"
+      },
+      0,
+      1
+    );
+    return;
+  }
+
+  const steps = Array.isArray(options.steps) && options.steps.length
+    ? options.steps
+    : [{
+        title: options.title || "로그 분석 중",
+        message: options.message || "잠시만 기다려 주세요.",
+        step: "분석 진행 중"
+      }];
+
+  let currentStepIndex = 0;
+  updateLoadingView(steps[currentStepIndex], currentStepIndex, steps.length);
+
+  if (steps.length > 1) {
+    loadingStepTimer = setInterval(() => {
+      currentStepIndex = (currentStepIndex + 1) % steps.length;
+      updateLoadingView(steps[currentStepIndex], currentStepIndex, steps.length);
+    }, options.intervalMs || 1600);
+  }
 }
 
 function escapeHtml(value) {
@@ -964,20 +1086,23 @@ async function requestAnalysis(file) {
 }
 
 async function runAnalysis() {
+  if (isLoading) return;
+
   const file = document.getElementById("zipFileInput").files[0];
 
   if (!file) {
-    setStatus("ZIP 파일을 선택해야 합니다.");
+    setStatus("분석할 ZIP 파일을 먼저 선택해 주세요.");
     return;
   }
 
   if (!file.name.toLowerCase().endsWith(".zip")) {
-    setStatus("ZIP 파일만 입력 가능합니다.");
+    setStatus("ZIP 형식의 파일만 분석할 수 있습니다.");
     return;
   }
 
   try {
-    setStatus("ZIP 업로드 및 분석 중...");
+    setStatus("ZIP 파일을 업로드하고 분석을 시작합니다...");
+    setLoading(true, { steps: ANALYSIS_LOADING_STEPS, intervalMs: 1700 });
     lastUploadedFile = file;
 
     const result = await requestAnalysis(file);
@@ -990,7 +1115,7 @@ async function runAnalysis() {
     renderOpenAiSolution(result.openAiSolution);
 
     setStatus(
-      `분석 완료\n` +
+      `분석이 완료되었습니다.\n` +
       `- 전체 로그 수: ${result.counts.total}\n` +
       `- DL Power 추출 수: ${result.counts.dlExtracted}\n` +
       `- VSWR 추출 수: ${result.counts.vswrExtracted}\n` +
@@ -1000,7 +1125,9 @@ async function runAnalysis() {
     );
   } catch (err) {
     console.error(err);
-    setStatus(`오류 발생: ${err.message || err}`);
+    setStatus(`분석 중 오류가 발생했습니다.\n${err.message || err}`);
+  } finally {
+    setLoading(false);
   }
 }
 
@@ -1026,14 +1153,16 @@ function resetScreen() {
   const openAiSolutionArea = document.getElementById("openAiSolutionArea");
   if (openAiSolutionArea) openAiSolutionArea.innerHTML = "";
 
-  setStatus("대기 중");
+  setStatus("분석할 ZIP 파일을 선택해 주세요.");
 }
 
 async function rerenderIfNeeded() {
   if (!lastUploadedFile) return;
+  if (isLoading) return;
 
   try {
-    setStatus("설정 변경 반영 중...");
+    setStatus("변경한 설정을 반영해 결과를 다시 정리하고 있습니다...");
+    setLoading(true, { steps: RERENDER_LOADING_STEPS, intervalMs: 1500 });
     const result = await requestAnalysis(lastUploadedFile);
     currentAnalysis = result.analysis;
     currentPerLogAi = result.perLogAi || [];
@@ -1043,10 +1172,12 @@ async function rerenderIfNeeded() {
     renderPerLogAi(currentPerLogAi);
     renderOpenAiSolution(result.openAiSolution);
 
-    setStatus("설정 변경 반영 완료");
+    setStatus("설정 변경이 반영되었습니다.");
   } catch (err) {
     console.error(err);
-    setStatus(`오류 발생: ${err.message || err}`);
+    setStatus(`결과를 다시 그리는 중 오류가 발생했습니다.\n${err.message || err}`);
+  } finally {
+    setLoading(false);
   }
 }
 
