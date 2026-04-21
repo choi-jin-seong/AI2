@@ -6,10 +6,11 @@ import os
 import re
 import zipfile
 import time 
+import uuid
 from io import BytesIO
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, g, jsonify, render_template, request
 from google import genai
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
@@ -28,6 +29,19 @@ STATUS_PASS = "PASS"
 STATUS_WARNING = "WARNING"
 STATUS_FAIL = "FAIL"
 STATUS_NA = "N/A"
+
+
+def get_request_id() -> str:
+    request_id = getattr(g, "request_id", None)
+    return request_id if request_id else "-"
+
+
+def error_response(message: str, status_code: int) -> tuple[Any, int]:
+    return jsonify({
+        "ok": False,
+        "message": message,
+        "requestId": get_request_id(),
+    }), status_code
 
 
 def safe_float(value: Any) -> float | None:
@@ -380,7 +394,13 @@ def parse_zip_logs(file_bytes: bytes) -> list[dict[str, Any]]:
                     "sfpRx": sfp_rx,
                 })
 
-            except Exception:
+            except Exception as exc:
+                app.logger.warning(
+                    "Failed to parse log file: request_id=%s file=%s error=%s",
+                    get_request_id(),
+                    name,
+                    exc,
+                )
                 results.append({
                     "name": name,
                     "displayId": extract_display_id(name),
@@ -947,7 +967,6 @@ def call_openai_solution(analysis: dict[str, Any], per_log_ai: list[dict[str, An
 
     payload = build_openai_payload(analysis, per_log_ai)
 
-    # 과부하 시에는 Lite 계열이 더 유리함
     model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     developer_prompt = """
@@ -1070,11 +1089,23 @@ def index():
     return render_template("index.html")
 
 
+@app.before_request
+def assign_request_id() -> None:
+    header_request_id = request.headers.get("X-Request-ID", "").strip()
+    g.request_id = header_request_id or uuid.uuid4().hex[:12]
+
+
+@app.after_request
+def attach_request_id(response: Any) -> Any:
+    response.headers["X-Request-ID"] = get_request_id()
+    return response
+
+
 @app.route("/analyze", methods=["POST"])
 def analyze() -> Any:
     upload = request.files.get("zipFile")
     if upload is None or upload.filename is None or not upload.filename.lower().endswith(".zip"):
-        return jsonify({"ok": False, "message": "ZIP 파일만 입력 가능합니다."}), 400
+        return error_response("ZIP 파일만 입력 가능합니다.", 400)
 
     try:
         hist_bin_count = int(request.form.get("histBinCount", "10"))
@@ -1101,6 +1132,7 @@ def analyze() -> Any:
         return jsonify({
             "ok": True,
             "message": "분석 완료",
+            "requestId": get_request_id(),
             "analysis": analysis,
             "aiSummary": ai_summary,
             "perLogAi": per_log_ai,
@@ -1115,23 +1147,35 @@ def analyze() -> Any:
         })
 
     except zipfile.BadZipFile:
-        return jsonify({"ok": False, "message": "정상적인 ZIP 파일이 아닙니다."}), 400
+        return error_response("정상적인 ZIP 파일이 아닙니다.", 400)
     except Exception as exc:
-        return jsonify({"ok": False, "message": f"오류 발생: {exc}"}), 500
+        app.logger.exception(
+            "Unexpected error during analyze request: request_id=%s error=%s",
+            get_request_id(),
+            exc,
+        )
+        return error_response("서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.", 500)
 
 @app.errorhandler(404)
 def handle_404(exc):
-    return jsonify({"ok": False, "message": "요청한 경로를 찾을 수 없습니다."}), 404
+    app.logger.info("Route not found: request_id=%s path=%s", get_request_id(), request.path)
+    return error_response("요청한 경로를 찾을 수 없습니다.", 404)
 
 
 @app.errorhandler(413)
 def handle_413(exc):
-    return jsonify({"ok": False, "message": "업로드 파일 크기가 제한을 초과했습니다."}), 413
+    app.logger.warning("Upload too large: request_id=%s path=%s", get_request_id(), request.path)
+    return error_response("업로드 파일 크기가 제한을 초과했습니다.", 413)
 
 
 @app.errorhandler(500)
 def handle_500(exc):
-    return jsonify({"ok": False, "message": "서버 내부 오류가 발생했습니다."}), 500
+    app.logger.exception("Unhandled server error: request_id=%s", get_request_id())
+    return error_response("서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.", 500)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "5000")),
+        debug=os.getenv("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes"},
+    )
