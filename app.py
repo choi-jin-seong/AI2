@@ -1066,19 +1066,19 @@ def eval_db_metric(
 
     if meta["bad_direction"] == "low":
         if z <= -3.0:
-            return STATUS_FAIL, notes
+            return STATUS_FAIL, notes, z
         if z <= -2.0:
-            return STATUS_WARNING, notes
-        return STATUS_PASS, notes
+            return STATUS_WARNING, notes, z
+        return STATUS_PASS, notes, z
 
     if meta["bad_direction"] == "high":
         if z >= 3.0:
-            return STATUS_FAIL, notes
+            return STATUS_FAIL, notes, z
         if z >= 2.0:
-            return STATUS_WARNING, notes
-        return STATUS_PASS, notes
+            return STATUS_WARNING, notes, z
+        return STATUS_PASS, notes, z
 
-    return STATUS_PASS, notes
+    return STATUS_PASS, notes, z
 
 
 def analyze_db_sheet_risk(item: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
