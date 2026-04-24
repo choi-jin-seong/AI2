@@ -201,6 +201,138 @@ function renderSummary(analysis) {
   `).join("");
 }
 
+function isDbAnalysis(analysis) {
+  return Boolean(
+    analysis &&
+    analysis.sortedResults &&
+    analysis.sortedResults.some(item => item.sourceType === "db_xls" || item.db)
+  );
+}
+
+function ensureDbAnalysisPanel() {
+  let panel = document.getElementById("dbAnalysisPanel");
+  if (panel) return panel;
+
+  panel = document.createElement("div");
+  panel.className = "panel";
+  panel.id = "dbAnalysisPanel";
+
+  panel.innerHTML = `
+    <h2>DB 성적서 기반 불량/정상 비교 분석</h2>
+    <div id="dbSummaryGrid" class="summary-grid"></div>
+
+    <div style="overflow-x:auto; margin-top:16px;">
+      <table>
+        <thead>
+          <tr>
+            <th>항목</th>
+            <th>불량군 평균</th>
+            <th>정상군 평균</th>
+            <th>차이</th>
+            <th>정상군 σ</th>
+            <th>불량군 평균 z-score</th>
+            <th>판단</th>
+          </tr>
+        </thead>
+        <tbody id="dbCompareTableBody"></tbody>
+      </table>
+    </div>
+  `;
+
+  const aiSummaryPanel = document.getElementById("aiSummaryArea")?.closest(".panel");
+  const resultSection = document.getElementById("resultSection");
+
+  if (resultSection && aiSummaryPanel) {
+    resultSection.insertBefore(panel, aiSummaryPanel);
+  } else if (resultSection) {
+    resultSection.prepend(panel);
+  }
+
+  return panel;
+}
+
+function renderDbAnalysisPanel(analysis) {
+  if (!isDbAnalysis(analysis)) {
+    const oldPanel = document.getElementById("dbAnalysisPanel");
+    if (oldPanel) oldPanel.remove();
+    return;
+  }
+
+  ensureDbAnalysisPanel();
+
+  const db = analysis.db || {};
+  const groupCompare = db.groupCompare || {};
+  const metrics = groupCompare.metrics || {};
+
+  const faultCount = groupCompare.faultCount ?? 0;
+  const normalCount = groupCompare.normalCount ?? 0;
+
+  const summaryCards = [
+    { label: "불량군 DB 수", value: faultCount },
+    { label: "정상군 DB 수", value: normalCount },
+    { label: "분석 방식", value: "정상군 대비 상대 편차" },
+    { label: "주요 기준", value: "Power 낮음 / VSWR 높음" }
+  ];
+
+  const summaryGrid = document.getElementById("dbSummaryGrid");
+  if (summaryGrid) {
+    summaryGrid.innerHTML = summaryCards.map(card => `
+      <div class="summary-card">
+        <div class="label">${escapeHtml(card.label)}</div>
+        <div class="value">${escapeHtml(String(card.value))}</div>
+      </div>
+    `).join("");
+  }
+
+  const tbody = document.getElementById("dbCompareTableBody");
+  if (!tbody) return;
+
+  const order = [
+    "dl0_power",
+    "dl1_power",
+    "dl0_vswr",
+    "ul0_vswr",
+    "dl1_vswr",
+    "ul1_vswr"
+  ];
+
+  tbody.innerHTML = order.map(key => {
+    const row = metrics[key] || {};
+    const z = row.zOfFaultAvg;
+
+    let judge = "정상 범위";
+    let judgeClass = "status-pass";
+
+    if (Number.isFinite(z)) {
+      if (
+        (key.includes("power") && z <= -3.0) ||
+        (key.includes("vswr") && z >= 3.0)
+      ) {
+        judge = "강한 이상 편차";
+        judgeClass = "status-fail";
+      } else if (
+        (key.includes("power") && z <= -2.0) ||
+        (key.includes("vswr") && z >= 2.0)
+      ) {
+        judge = "주의 편차";
+        judgeClass = "status-warning";
+      }
+    }
+
+    return `
+      <tr>
+        <td>${escapeHtml(row.label || key)}</td>
+        <td>${safeNumber(row.faultAvg, 4)}</td>
+        <td>${safeNumber(row.normalAvg, 4)}</td>
+        <td>${safeNumber(row.diff, 4)}</td>
+        <td>${safeNumber(row.normalStd, 4)}</td>
+        <td>${safeNumber(z, 2)}</td>
+        <td><span class="status-chip ${judgeClass}">${escapeHtml(judge)}</span></td>
+      </tr>
+    `;
+  }).join("");
+}
+
 function renderAiSummary(aiSummary) {
   const area = document.getElementById("aiSummaryArea");
   if (!area) return;
@@ -987,10 +1119,12 @@ function renderMergedTable(analysis, perLogAi) {
     const ai = aiMap.get(item.displayId);
     const sb = ai?.statusByItem || {};
     const notes = [];
+	const dbMode = item.sourceType === "db_xls" || item.db;
 
-    if (item.dlPwr === null) notes.push("dl_pwr 추출 실패");
-    if (item.ulPwr === null) notes.push("ul_pwr 추출 실패");
-    if (item.vswr === null) notes.push("vswr 추출 실패");
+	if (item.dlPwr === null) notes.push(dbMode ? "DL Power 성적서 값 없음" : "dl_pwr 추출 실패");
+	if (item.ulPwr === null && !dbMode) notes.push("ul_pwr 추출 실패");
+	if (item.vswr === null) notes.push(dbMode ? "VSWR 성적서 값 없음" : "vswr 추출 실패");
+   
 
     if (
       !Number.isFinite(item.temp?.dtu) &&
@@ -1003,6 +1137,10 @@ function renderMergedTable(analysis, perLogAi) {
     ) {
       notes.push("temp 추출 실패");
     }
+	if (dbMode) {
+  	  notes.push("DB 성적서 기반 분석");
+	}
+	
 
     const worstRl = getWorstReturnLoss(item);
 
@@ -1051,6 +1189,7 @@ function renderAll(analysis, perLogAi) {
   document.getElementById("resultSection").classList.remove("section-hidden");
   renderSummary(analysis);
   destroyCharts();
+  renderDbAnalysisPanel(analysis);	
   createDlBarChart(analysis);
   createDlHistogram(analysis);
   createUlBarChart(analysis);
