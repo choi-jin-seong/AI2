@@ -1,4 +1,5 @@
 Flask==3.0.3
 google-genai
 gunicorn
+xlrd==2.0.1
 

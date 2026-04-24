@@ -7,6 +7,7 @@ import re
 import zipfile
 import time 
 import uuid
+import xlrd
 from io import BytesIO
 from typing import Any
 
@@ -348,6 +349,266 @@ def build_temp_stats(sorted_results: list[dict[str, Any]]) -> dict[str, dict[str
         "rfu1": calc_stats([item["temp"].get("rfu1") for item in sorted_results]),
     }
 
+DB_EMPTY_TEMP = {
+    "dtu": None,
+    "fpga": None,
+    "pmc": None,
+    "pwr12v": None,
+    "aisg145v": None,
+    "rfu0": None,
+    "rfu1": None,
+}
+
+DB_METRICS = {
+    "dl0_power": {
+        "label": "DL0 Power",
+        "kind": "power",
+        "bad_direction": "low",
+    },
+    "dl1_power": {
+        "label": "DL1 Power",
+        "kind": "power",
+        "bad_direction": "low",
+    },
+    "dl0_vswr": {
+        "label": "DL0 VSWR",
+        "kind": "vswr",
+        "bad_direction": "high",
+    },
+    "ul0_vswr": {
+        "label": "UL0 VSWR",
+        "kind": "vswr",
+        "bad_direction": "high",
+    },
+    "dl1_vswr": {
+        "label": "DL1 VSWR",
+        "kind": "vswr",
+        "bad_direction": "high",
+    },
+    "ul1_vswr": {
+        "label": "UL1 VSWR",
+        "kind": "vswr",
+        "bad_direction": "high",
+    },
+}
+
+
+def clean_excel_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def excel_float(value: Any) -> float | None:
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return float(value)
+
+    text = clean_excel_value(value).replace(",", "")
+    if not text:
+        return None
+
+    try:
+        num = float(text)
+    except ValueError:
+        return None
+
+    return num if math.isfinite(num) else None
+
+
+def get_cell(sheet: Any, row: int, col: int) -> Any:
+    if row < 0 or col < 0 or row >= sheet.nrows or col >= sheet.ncols:
+        return None
+    return sheet.cell_value(row, col)
+
+
+def find_label_positions(sheet: Any, label: str) -> list[tuple[int, int]]:
+    positions: list[tuple[int, int]] = []
+    wanted = label.strip().lower()
+
+    for r in range(sheet.nrows):
+        for c in range(sheet.ncols):
+            value = clean_excel_value(get_cell(sheet, r, c)).lower()
+            if value == wanted:
+                positions.append((r, c))
+
+    return positions
+
+
+def find_right_value(sheet: Any, label: str) -> str | None:
+    for r, c in find_label_positions(sheet, label):
+        for cc in range(c + 1, min(c + 8, sheet.ncols)):
+            value = clean_excel_value(get_cell(sheet, r, cc))
+            if value and value != ":":
+                return value
+    return None
+
+
+def find_pass_fail(sheet: Any) -> str | None:
+    for r in range(sheet.nrows):
+        for c in range(sheet.ncols):
+            value = clean_excel_value(get_cell(sheet, r, c)).upper()
+            if "PASS/FAIL" in value:
+                for cc in range(c + 1, min(c + 4, sheet.ncols)):
+                    result = clean_excel_value(get_cell(sheet, r, cc)).upper()
+                    if result in {"PASS", "FAIL"}:
+                        return result
+    return None
+
+
+def read_measured_row(sheet: Any, label: str, occurrence: int = 0) -> dict[str, Any]:
+    rows = find_label_positions(sheet, label)
+
+    if occurrence >= len(rows):
+        return {
+            "value": None,
+            "lower": None,
+            "upper": None,
+            "unit": None,
+            "status": None,
+            "row": None,
+        }
+
+    r, _ = rows[occurrence]
+
+    return {
+        "value": excel_float(get_cell(sheet, r, 7)),   # H: Measured
+        "lower": excel_float(get_cell(sheet, r, 6)),   # G: Lower
+        "upper": excel_float(get_cell(sheet, r, 8)),   # I: Upper
+        "unit": clean_excel_value(get_cell(sheet, r, 9)) or None,
+        "status": clean_excel_value(get_cell(sheet, r, 10)).upper() or None,
+        "row": r + 1,
+    }
+
+
+def calc_avg_optional(values: list[float | None]) -> float | None:
+    valid = [v for v in values if v is not None]
+    return mean(valid) if valid else None
+
+
+def infer_db_group(path: str) -> str:
+    normalized = path.replace("\\", "/").lower()
+
+    # 주의: "불량 외 장비"는 정상 비교군으로 취급
+    if "불량 외" in path or "정상" in path or "normal" in normalized or "good" in normalized:
+        return "NORMAL"
+
+    if "불량" in path or "fail" in normalized or "bad" in normalized or "ng" in normalized:
+        return "FAULT"
+
+    return "UNKNOWN"
+
+
+def extract_serial_from_excel_path(path: str) -> str:
+    base = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if "." in base:
+        base = base.rsplit(".", 1)[0]
+    return base
+
+
+def parse_db_xls(raw: bytes, path: str) -> dict[str, Any]:
+    book = xlrd.open_workbook(file_contents=raw)
+    sheet = book.sheet_by_index(0)
+
+    serial = find_right_value(sheet, "Serial Number") or extract_serial_from_excel_path(path)
+    factory_result = find_pass_fail(sheet)
+
+    temp_env = read_measured_row(sheet, "온도", 0)
+
+    dl0_power = read_measured_row(sheet, "Base Station output power", 0)
+    dl1_power = read_measured_row(sheet, "Base Station output power", 1)
+
+    dl0_vswr = read_measured_row(sheet, "DL0 VSWR", 0)
+    ul0_vswr = read_measured_row(sheet, "UL0 VSWR", 0)
+    dl1_vswr = read_measured_row(sheet, "DL1 VSWR", 0)
+    ul1_vswr = read_measured_row(sheet, "UL1 VSWR", 0)
+
+    vswr = {
+        "p0": dl0_vswr["value"],
+        "p1": ul0_vswr["value"],
+        "p2": dl1_vswr["value"],
+        "p3": ul1_vswr["value"],
+    }
+
+    # 기존 UI의 Return Loss 그래프와 호환시키기 위해 VSWR -> RL 변환
+    rl = {
+        "p0": calc_return_loss(vswr["p0"]),
+        "p1": calc_return_loss(vswr["p1"]),
+        "p2": calc_return_loss(vswr["p2"]),
+        "p3": calc_return_loss(vswr["p3"]),
+    }
+
+    db = {
+        "serial": serial,
+        "group": infer_db_group(path),
+        "factoryResult": factory_result,
+        "tempEnv": temp_env["value"],
+        "dl0_power": dl0_power,
+        "dl1_power": dl1_power,
+        "dl0_vswr": dl0_vswr,
+        "ul0_vswr": ul0_vswr,
+        "dl1_vswr": dl1_vswr,
+        "ul1_vswr": ul1_vswr,
+    }
+
+    return {
+        "name": path,
+        "displayId": serial,
+        "sourceType": "db_xls",
+        "group": db["group"],
+
+        # 기존 화면 호환용 대표값
+        "dlPwr": calc_avg_optional([dl0_power["value"], dl1_power["value"]]),
+        "ulPwr": None,
+        "vswr": vswr,
+        "rl": rl,
+        "temp": dict(DB_EMPTY_TEMP),
+        "psuIn": None,
+        "sfpTx": None,
+        "sfpRx": None,
+
+        # 신규 DB 분석용 원본값
+        "db": db,
+    }
+
+
+def parse_zip_rru_data(file_bytes: bytes) -> list[dict[str, Any]]:
+    with zipfile.ZipFile(BytesIO(file_bytes)) as zf:
+        xls_names = sorted([
+            name for name in zf.namelist()
+            if not name.endswith("/")
+            and name.lower().endswith(".xls")
+            and "__macosx" not in name.lower()
+            and "~$" not in name
+        ])
+
+        if xls_names:
+            results: list[dict[str, Any]] = []
+
+            for name in xls_names:
+                try:
+                    results.append(parse_db_xls(zf.read(name), name))
+                except Exception as exc:
+                    app.logger.warning(
+                        "Failed to parse DB xls: request_id=%s file=%s error=%s",
+                        get_request_id(),
+                        name,
+                        exc,
+                    )
+
+            if not results:
+                raise ValueError("ZIP 내부의 .xls DB 성적서를 읽지 못했습니다.")
+
+            return results
+
+    # 기존 로그 ZIP도 계속 지원
+    return parse_zip_logs(file_bytes)
 
 def parse_zip_logs(file_bytes: bytes) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
@@ -416,6 +677,107 @@ def parse_zip_logs(file_bytes: bytes) -> list[dict[str, Any]]:
 
     return results
 
+def build_db_baseline(results: list[dict[str, Any]]) -> dict[str, Any]:
+    normal_items = [
+        item for item in results
+        if item.get("sourceType") == "db_xls"
+        and item.get("group") == "NORMAL"
+        and isinstance(item.get("db"), dict)
+    ]
+
+    # 정상군이 없으면 전체를 기준으로 사용
+    baseline_items = normal_items or [
+        item for item in results
+        if item.get("sourceType") == "db_xls"
+        and isinstance(item.get("db"), dict)
+    ]
+
+    baseline: dict[str, Any] = {}
+
+    for key, meta in DB_METRICS.items():
+        values = []
+
+        for item in baseline_items:
+            row = item["db"].get(key)
+            if isinstance(row, dict) and row.get("value") is not None:
+                values.append(row["value"])
+
+        baseline[key] = {
+            "label": meta["label"],
+            "kind": meta["kind"],
+            "badDirection": meta["bad_direction"],
+            "n": len(values),
+            "min": min(values) if values else None,
+            "avg": mean(values),
+            "std": pstdev(values),
+            "max": max(values) if values else None,
+        }
+
+    return baseline
+
+
+def build_db_group_compare(
+    results: list[dict[str, Any]],
+    baseline: dict[str, Any],
+) -> dict[str, Any]:
+    fault_items = [
+        item for item in results
+        if item.get("sourceType") == "db_xls"
+        and item.get("group") == "FAULT"
+        and isinstance(item.get("db"), dict)
+    ]
+
+    normal_items = [
+        item for item in results
+        if item.get("sourceType") == "db_xls"
+        and item.get("group") == "NORMAL"
+        and isinstance(item.get("db"), dict)
+    ]
+
+    compare: dict[str, Any] = {
+        "faultCount": len(fault_items),
+        "normalCount": len(normal_items),
+        "metrics": {},
+    }
+
+    for key, meta in DB_METRICS.items():
+        fault_values = [
+            item["db"][key]["value"]
+            for item in fault_items
+            if isinstance(item["db"].get(key), dict)
+            and item["db"][key].get("value") is not None
+        ]
+
+        normal_values = [
+            item["db"][key]["value"]
+            for item in normal_items
+            if isinstance(item["db"].get(key), dict)
+            and item["db"][key].get("value") is not None
+        ]
+
+        fault_avg = mean(fault_values)
+        normal_avg = mean(normal_values)
+        normal_std = pstdev(normal_values)
+
+        diff = None
+        z_of_fault_avg = None
+
+        if fault_avg is not None and normal_avg is not None:
+            diff = fault_avg - normal_avg
+
+        if diff is not None and normal_std > 0:
+            z_of_fault_avg = diff / normal_std
+
+        compare["metrics"][key] = {
+            "label": meta["label"],
+            "faultAvg": fault_avg,
+            "normalAvg": normal_avg,
+            "diff": diff,
+            "normalStd": normal_std,
+            "zOfFaultAvg": z_of_fault_avg,
+        }
+
+    return compare
 
 def build_analysis(
     raw_results: list[dict[str, Any]],
@@ -453,6 +815,8 @@ def build_analysis(
         if item.get("dlPwr") is None and item.get("rl") is None and no_temp:
             failed.append(item)
 
+    db_baseline = build_db_baseline(sorted_results)
+    db_group_compare = build_db_group_compare(sorted_results, db_baseline)
     return {
         "rawResults": raw_results,
         "sortedResults": sorted_results,
@@ -494,6 +858,10 @@ def build_analysis(
             "min": min(heatmap_values) if heatmap_values else None,
             "max": max(heatmap_values) if heatmap_values else None,
             "stats": build_temp_stats(sorted_results),
+        },
+        "db": {
+            "baseline": db_baseline,
+            "groupCompare": db_group_compare,
         },
     }
 
@@ -652,10 +1020,217 @@ def build_status_by_item(item: dict[str, Any], analysis: dict[str, Any]) -> dict
         },
     }
 
+def worst_status(statuses: list[str]) -> str:
+    if STATUS_FAIL in statuses:
+        return STATUS_FAIL
+    if STATUS_WARNING in statuses:
+        return STATUS_WARNING
+    if STATUS_PASS in statuses:
+        return STATUS_PASS
+    return STATUS_NA
+
+
+def z_score(value: float | None, avg: float | None, std: float | None) -> float | None:
+    if value is None or avg is None or std is None or std <= 0:
+        return None
+    return (value - avg) / std
+
+
+def eval_db_metric(
+    metric_key: str,
+    measured: float | None,
+    factory_status: str | None,
+    baseline: dict[str, Any],
+) -> tuple[str, list[str], float | None]:
+    metric_base = baseline.get(metric_key, {})
+    meta = DB_METRICS[metric_key]
+
+    avg = metric_base.get("avg")
+    std = metric_base.get("std")
+    z = z_score(measured, avg, std)
+
+    notes: list[str] = []
+
+    if measured is None:
+        return STATUS_NA, ["측정값 없음"], z
+
+    if factory_status == STATUS_FAIL:
+        return STATUS_FAIL, ["성적서 자체 판정 FAIL"], z
+
+    if z is None:
+        if factory_status == STATUS_PASS:
+            return STATUS_PASS, ["성적서 PASS, 정상군 기준 부족"], z
+        return STATUS_NA, ["정상군 기준 부족"], z
+
+    notes.append(f"정상군 평균 {avg:.3f}, 표준편차 {std:.3f}, z={z:.2f}")
+
+    if meta["bad_direction"] == "low":
+        if z <= -3.0:
+            return STATUS_FAIL, notes
+        if z <= -2.0:
+            return STATUS_WARNING, notes
+        return STATUS_PASS, notes
+
+    if meta["bad_direction"] == "high":
+        if z >= 3.0:
+            return STATUS_FAIL, notes
+        if z >= 2.0:
+            return STATUS_WARNING, notes
+        return STATUS_PASS, notes
+
+    return STATUS_PASS, notes
+
+
+def analyze_db_sheet_risk(item: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
+    db = item.get("db") or {}
+    baseline = analysis.get("db", {}).get("baseline", {})
+
+    issues: list[str] = []
+    causes: list[str] = []
+    checks: list[str] = []
+    score = 0
+    fail_count = 0
+    warning_count = 0
+
+    metric_details: dict[str, Any] = {}
+
+    for key, meta in DB_METRICS.items():
+        row = db.get(key) or {}
+        measured = row.get("value")
+        factory_status = row.get("status")
+
+        status, notes, z = eval_db_metric(key, measured, factory_status, baseline)
+
+        metric_details[key] = {
+            "status": status,
+            "label": meta["label"],
+            "value": measured,
+            "factoryStatus": factory_status,
+            "z": z,
+            "notes": notes,
+        }
+
+        if status == STATUS_FAIL:
+            fail_count += 1
+            score += 40
+        elif status == STATUS_WARNING:
+            warning_count += 1
+            score += 15
+
+        if status in {STATUS_FAIL, STATUS_WARNING}:
+            value_text = "N/A" if measured is None else f"{measured:.3f}"
+            z_text = "" if z is None else f", z={z:.2f}"
+            issues.append(f"{meta['label']} {status} ({value_text}{z_text})")
+
+            if meta["kind"] == "power":
+                causes.append("정상군 대비 출력이 낮아 RF 출력 경로 손실, PA gain 편차, calibration 편차 가능성")
+                checks.append(f"{meta['label']} 관련 PA path, coupler, calibration 값 확인")
+
+            if meta["kind"] == "vswr":
+                causes.append("정상군 대비 VSWR이 높아 RF 매칭, 커넥터, 필터, 듀플렉서, 안테나 경로 문제 가능성")
+                checks.append(f"{meta['label']} 관련 RF 포트 체결, 케이블, 필터/듀플렉서 경로 확인")
+
+    dl1_power_status = metric_details["dl1_power"]["status"]
+    dl1_vswr_status = metric_details["dl1_vswr"]["status"]
+    ul1_vswr_status = metric_details["ul1_vswr"]["status"]
+
+    if dl1_power_status in {STATUS_FAIL, STATUS_WARNING} and (
+        dl1_vswr_status in {STATUS_FAIL, STATUS_WARNING}
+        or ul1_vswr_status in {STATUS_FAIL, STATUS_WARNING}
+    ):
+        causes.append("DL1 출력 저하와 1번 Path VSWR 상승이 같이 보여 RF Path 1 공통 경로 문제 가능성")
+        checks.append("DL1/UL1 공통 RF 경로, 듀플렉서, 커넥터, 케이블, 안테나 포트 교차 점검")
+
+    if db.get("factoryResult") == STATUS_FAIL:
+        issues.append("DB 성적서 종합 판정 FAIL")
+        causes.append("성적서 내 절대 규격 불합격 항목 존재")
+        checks.append("성적서 FAIL row 원본 확인")
+        fail_count += 1
+        score += 50
+
+    if not issues:
+        if item.get("group") == "FAULT":
+            issues.append("DB 성적서 기준으로는 정상군 대비 뚜렷한 이상 편차가 없음")
+            causes.append("DB 성적서만으로는 필드 불량 원인을 특정할 수 없음")
+            checks.append("필드 재현 조건, 현장 연결 상태, 시간대별 alarm 로그 추가 확인 필요")
+        else:
+            issues.append("정상군 기준 특이 편차 없음")
+
+    dl_status = worst_status([
+        metric_details["dl0_power"]["status"],
+        metric_details["dl1_power"]["status"],
+    ])
+
+    vswr_status = worst_status([
+        metric_details["dl0_vswr"]["status"],
+        metric_details["ul0_vswr"]["status"],
+        metric_details["dl1_vswr"]["status"],
+        metric_details["ul1_vswr"]["status"],
+    ])
+
+    status_by_item = {
+        # 기존 UI 호환용
+        "dl_pwr": {
+            "status": dl_status,
+            "value": item.get("dlPwr"),
+            "notes": (
+                metric_details["dl0_power"]["notes"]
+                + metric_details["dl1_power"]["notes"]
+            ),
+        },
+        "return_loss": {
+            "status": vswr_status,
+            "worst": get_worst_rl(item),
+            "notes": (
+                metric_details["dl0_vswr"]["notes"]
+                + metric_details["ul0_vswr"]["notes"]
+                + metric_details["dl1_vswr"]["notes"]
+                + metric_details["ul1_vswr"]["notes"]
+            ),
+        },
+
+        # DB 성적서에는 없는 항목
+        "ul_pwr": {"status": STATUS_NA, "value": None, "notes": ["DB 성적서에 UL Power 없음"]},
+        "dtu_temp": {"status": STATUS_NA, "value": None},
+        "rfu_temp": {"status": STATUS_NA, "worst": None, "rfu0": None, "rfu1": None},
+        "psu_in": {"status": STATUS_NA, "value": None},
+        "sfp_tx": {"status": STATUS_NA, "value": None},
+        "sfp_rx": {"status": STATUS_NA, "value": None},
+
+        # 신규 상세 정보
+        "db_metrics": metric_details,
+    }
+
+    overall_status = STATUS_FAIL if fail_count > 0 else STATUS_WARNING if warning_count > 0 else STATUS_PASS
+
+    if overall_status == STATUS_FAIL:
+        level = "HIGH"
+    elif warning_count >= 2:
+        level = "MEDIUM"
+    elif warning_count == 1:
+        level = "LOW"
+    else:
+        level = "NORMAL"
+
+    return {
+        "displayId": item.get("displayId"),
+        "group": item.get("group"),
+        "overallStatus": overall_status,
+        "level": level,
+        "score": score,
+        "failCount": fail_count,
+        "warningCount": warning_count,
+        "statusByItem": status_by_item,
+        "issues": list(dict.fromkeys(issues)),
+        "causes": list(dict.fromkeys(causes)),
+        "checks": list(dict.fromkeys(checks)),
+    }
 
 def analyze_single_log_risk(item: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
-    status_by_item = build_status_by_item(item, analysis)
+    if item.get("sourceType") == "db_xls":
+        return analyze_db_sheet_risk(item, analysis)
 
+    status_by_item = build_status_by_item(item, analysis)
     issues: list[str] = []
     causes: list[str] = []
     checks: list[str] = []
@@ -1117,7 +1692,7 @@ def analyze() -> Any:
     tolerance_value = parse_optional_float(request.form.get("toleranceValue"))
 
     try:
-        raw_results = parse_zip_logs(upload.read())
+        raw_results = parse_zip_rru_data(upload.read())
         analysis = build_analysis(raw_results, sort_mode, hist_bin_count, target_value, tolerance_value)
         per_log_ai = build_per_log_ai(analysis)
         ai_summary = build_ai_summary(analysis, per_log_ai)
