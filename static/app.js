@@ -1206,7 +1206,6 @@ async function requestAnalysis(file) {
   const formData = new FormData();
   formData.append("zipFile", file);
 
-  // 고정값
   formData.append("histBinCount", "10");
   formData.append("sortMode", document.getElementById("sortMode").value);
   formData.append("targetValue", "");
@@ -1217,12 +1216,28 @@ async function requestAnalysis(file) {
     body: formData
   });
 
-  const data = await response.json();
-  if (!response.ok || !data.ok) {
-    throw new Error(data.message || "분석 실패");
+  const contentType = response.headers.get("content-type") || "";
+
+  let data;
+
+  if (contentType.includes("application/json")) {
+    data = await response.json();
+  } else {
+    const text = await response.text();
+    throw new Error(
+      `서버가 JSON이 아닌 응답을 반환했습니다.\n` +
+      `HTTP ${response.status}\n` +
+      text.slice(0, 500)
+    );
   }
+
+  if (!response.ok || !data.ok) {
+    throw new Error(data.message || data.error || `분석 실패: HTTP ${response.status}`);
+  }
+
   return data;
 }
+
 
 async function runAnalysis() {
   if (isLoading) return;
